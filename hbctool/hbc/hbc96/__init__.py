@@ -87,8 +87,42 @@ class HBC96:
         if disasm:
             bc = assemble(insts)
             
-        assert len(bc) <= bytecodeSizeInBytes, "Overflowed instruction length is not supported yet."
-        functionHeader["bytecodeSizeInBytes"] = len(bc)
+        # assert len(bc) <= bytecodeSizeInBytes, "Overflowed instruction length is not supported yet."
+        # functionHeader["bytecodeSizeInBytes"] = len(bc)
+        
+        # Handle bytecode overflow
+        if len(bc) > bytecodeSizeInBytes:
+            # Extend the instruction buffer if needed
+            if start + len(bc) > len(self.getObj()["inst"]):
+                # Extend the instruction buffer
+                extension_needed = start + len(bc) - len(self.getObj()["inst"])
+                self.getObj()["inst"].extend([0] * extension_needed)
+        
+        # Check if we need to use the overflow mechanism (when size exceeds 15-bit limit)
+        if len(bc) > (1 << 15) - 1:  # 15-bit limit for SmallFuncHeader
+            # Set the overflowed flag (bit 5 in flags)
+            functionHeader["flags"] = functionHeader.get("flags", 0) | (1 << 5)
+            
+            # If not already overflowed, create the small header backup
+            if "small" not in functionHeader:
+                # Save the current header as small header for future export
+                functionHeader["small"] = {}
+                for key in ["offset", "paramCount", "bytecodeSizeInBytes", "functionName", 
+                           "infoOffset", "frameSize", "environmentSize", "highestReadCacheIndex", 
+                           "highestWriteCacheIndex", "flags"]:
+                    if key in functionHeader:
+                        functionHeader["small"][key] = functionHeader[key]
+                
+                # Ensure the small header has the truncated bytecode size (15-bit max)
+                functionHeader["small"]["bytecodeSizeInBytes"] = min(bytecodeSizeInBytes, (1 << 15) - 1)
+                functionHeader["small"]["flags"] = functionHeader["flags"]
+            
+            # Update the full header with new bytecode size (32-bit)
+            functionHeader["bytecodeSizeInBytes"] = len(bc)
+        else:
+            # Can fit in 15 bits, just update the size normally
+            functionHeader["bytecodeSizeInBytes"] = len(bc)
+            
         memcpy(self.getObj()["inst"], bc, start, len(bc))
         
     def getStringCount(self):
