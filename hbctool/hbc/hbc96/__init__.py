@@ -87,21 +87,28 @@ class HBC96:
         if disasm:
             bc = assemble(insts)
             
-        # assert len(bc) <= bytecodeSizeInBytes, "Overflowed instruction length is not supported yet."
-        # functionHeader["bytecodeSizeInBytes"] = len(bc)
+        # Handle bytecode size changes
+        original_size = bytecodeSizeInBytes
+        new_size = len(bc)
         
-        # Handle bytecode overflow
-        if len(bc) > bytecodeSizeInBytes:
-            # Extend the instruction buffer if needed
-            if start + len(bc) > len(self.getObj()["inst"]):
-                # Extend the instruction buffer
-                extension_needed = start + len(bc) - len(self.getObj()["inst"])
-                self.getObj()["inst"].extend([0] * extension_needed)
+        # First, handle instruction buffer size if needed
+        if start + new_size > len(self.getObj()["inst"]):
+            # Extend the instruction buffer
+            extension_needed = start + new_size - len(self.getObj()["inst"])
+            self.getObj()["inst"].extend([0] * extension_needed)
         
         # Check if we need to use the overflow mechanism (when size exceeds 15-bit limit)
-        if len(bc) > (1 << 15) - 1:  # 15-bit limit for SmallFuncHeader
-            # Set the overflowed flag (bit 5 in flags)
-            functionHeader["flags"] = functionHeader.get("flags", 0) | (1 << 5)
+        max_small_size = (1 << 15) - 1  # 15-bit limit for SmallFuncHeader
+        
+        if new_size > max_small_size:
+            # Need to use overflow mechanism
+            
+            # Initialize flags if not present
+            if "flags" not in functionHeader:
+                functionHeader["flags"] = 0
+                
+            # Set the overflowed flag (bit 5 in the flags bitfield)
+            functionHeader["flags"] = functionHeader["flags"] | (1 << 5)
             
             # If not already overflowed, create the small header backup
             if "small" not in functionHeader:
@@ -114,15 +121,32 @@ class HBC96:
                         functionHeader["small"][key] = functionHeader[key]
                 
                 # Ensure the small header has the truncated bytecode size (15-bit max)
-                functionHeader["small"]["bytecodeSizeInBytes"] = min(bytecodeSizeInBytes, (1 << 15) - 1)
+                # Use the original size truncated to 15-bit, not the new size
+                functionHeader["small"]["bytecodeSizeInBytes"] = min(original_size, max_small_size)
+                # Set the overflow flag in the small header too
                 functionHeader["small"]["flags"] = functionHeader["flags"]
             
             # Update the full header with new bytecode size (32-bit)
-            functionHeader["bytecodeSizeInBytes"] = len(bc)
-        else:
-            # Can fit in 15 bits, just update the size normally
-            functionHeader["bytecodeSizeInBytes"] = len(bc)
+            functionHeader["bytecodeSizeInBytes"] = new_size
             
+        else:
+            # Size fits in 15 bits
+            if new_size <= original_size or original_size <= max_small_size:
+                # Can safely update without overflow
+                functionHeader["bytecodeSizeInBytes"] = new_size
+                
+                # Clear overflow flag if it was previously set but no longer needed
+                if "flags" in functionHeader:
+                    functionHeader["flags"] = functionHeader["flags"] & ~(1 << 5)
+                    
+                # Remove small header if it exists and is no longer needed
+                if "small" in functionHeader and new_size <= max_small_size:
+                    del functionHeader["small"]
+            else:
+                # Growing beyond original but still under 15-bit limit
+                functionHeader["bytecodeSizeInBytes"] = new_size
+            
+        # Copy the bytecode to the instruction buffer
         memcpy(self.getObj()["inst"], bc, start, len(bc))
         
     def getStringCount(self):
